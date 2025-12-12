@@ -7,6 +7,13 @@ const { pipeline } = require('stream/promises');
 const REDFIN_URL = 'https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/zip_code_market_tracker.tsv000.gz';
 const TEMP_FILE = 'temp_data.tsv';
 
+function stripQuotes(str) {
+  if (str && str.startsWith('"') && str.endsWith('"')) {
+    return str.slice(1, -1);
+  }
+  return str;
+}
+
 async function downloadAndDecompress(url) {
   console.log('Downloading and decompressing...');
   
@@ -52,22 +59,14 @@ async function parseTSV() {
   let colIndex = {};
   const zipData = new Map();
   let processed = 0;
-  let lineNum = 0;
   
   for await (const line of rl) {
-    lineNum++;
-    
     if (!headers) {
-      headers = line.split('\t');
+      // Parse headers - strip quotes and convert to lowercase for matching
+      const rawHeaders = line.split('\t');
+      headers = rawHeaders.map(h => stripQuotes(h).toLowerCase());
       
-      console.log('=== HEADER DEBUG ===');
-      console.log('Number of columns:', headers.length);
-      console.log('First 10 headers:', headers.slice(0, 10));
-      console.log('Looking for region-like columns:', headers.filter(h => h.toLowerCase().includes('region')));
-      console.log('Looking for property-like columns:', headers.filter(h => h.toLowerCase().includes('property')));
-      console.log('Looking for median-like columns:', headers.filter(h => h.toLowerCase().includes('median')));
-      console.log('All headers:', headers);
-      console.log('=== END DEBUG ===');
+      console.log('Cleaned headers sample:', headers.slice(0, 10));
       
       colIndex = {
         region: headers.indexOf('region'),
@@ -82,24 +81,25 @@ async function parseTSV() {
       continue;
     }
     
-    if (lineNum === 2) {
-      const cols = line.split('\t');
-      console.log('=== FIRST DATA ROW ===');
-      console.log('Number of columns:', cols.length);
-      console.log('First 10 values:', cols.slice(0, 10));
-      console.log('=== END DATA ROW ===');
-    }
-    
     if (!line.trim()) continue;
     
     const cols = line.split('\t');
     processed++;
     
-    if (cols[colIndex.region_type] !== 'zip code') continue;
-    if (cols[colIndex.property_type] !== 'All Residential') continue;
+    // Strip quotes from values we're checking
+    const regionType = stripQuotes(cols[colIndex.region_type]);
+    const propertyType = stripQuotes(cols[colIndex.property_type]);
     
-    const zip = cols[colIndex.region];
-    const periodEnd = cols[colIndex.period_end];
+    if (regionType !== 'zip code') continue;
+    if (propertyType !== 'All Residential') continue;
+    
+    const region = stripQuotes(cols[colIndex.region]);
+    const periodEnd = stripQuotes(cols[colIndex.period_end]);
+    
+    // Extract just the zip code number from "Zip Code: 64119" format
+    const zipMatch = region.match(/(\d{5})/);
+    if (!zipMatch) continue;
+    const zip = zipMatch[1];
     
     const existing = zipData.get(zip);
     if (existing && existing.period_end >= periodEnd) continue;
