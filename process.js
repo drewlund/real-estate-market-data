@@ -1,70 +1,74 @@
 const fs = require('fs');
 const https = require('https');
 const zlib = require('zlib');
+const readline = require('readline');
+const { pipeline } = require('stream/promises');
 
 const REDFIN_URL = 'https://redfin-public-data.s3.us-west-2.amazonaws.com/redfin_market_tracker/zip_code_market_tracker.tsv000.gz';
+const TEMP_FILE = 'temp_data.tsv';
 
-async function downloadFile(url) {
+async function downloadAndDecompress(url) {
+  console.log('Downloading and decompressing...');
+  
   return new Promise((resolve, reject) => {
-    console.log('Downloading from Redfin...');
-    
-    https.get(url, (response) => {
+    https.get(url, async (response) => {
       if (response.statusCode !== 200) {
         reject(new Error(`HTTP ${response.statusCode}`));
         return;
       }
       
-      const chunks = [];
-      let downloaded = 0;
+      const gunzip = zlib.createGunzip();
+      const output = fs.createWriteStream(TEMP_FILE);
       
+      let downloaded = 0;
       response.on('data', (chunk) => {
-        chunks.push(chunk);
         downloaded += chunk.length;
-        if (downloaded % (10 * 1024 * 1024) < chunk.length) {
-          console.log(`Downloaded ${Math.round(downloaded / 1024 / 1024)}MB...`);
+        if (downloaded % (50 * 1024 * 1024) < chunk.length) {
+          console.log(`Downloaded ${Math.round(downloaded / 1024 / 1024)}MB compressed...`);
         }
       });
       
-      response.on('end', () => {
-        console.log(`Download complete: ${Math.round(downloaded / 1024 / 1024)}MB`);
-        resolve(Buffer.concat(chunks));
-      });
-      
-      response.on('error', reject);
+      try {
+        await pipeline(response, gunzip, output);
+        console.log('Download and decompression complete');
+        resolve();
+      } catch (err) {
+        reject(err);
+      }
     }).on('error', reject);
   });
 }
 
-function decompress(buffer) {
-  console.log('Decompressing...');
-  return zlib.gunzipSync(buffer);
-}
-
-function parseTSV(text) {
+async function parseTSV() {
   console.log('Parsing TSV...');
   
-  const lines = text.split('\n');
-  console.log(`Total lines: ${lines.length.toLocaleString()}`);
+  const fileStream = fs.createReadStream(TEMP_FILE);
+  const rl = readline.createInterface({
+    input: fileStream,
+    crlfDelay: Infinity
+  });
   
-  const headers = lines[0].split('\t');
-  
-  const colIndex = {
-    region: headers.indexOf('region'),
-    region_type: headers.indexOf('region_type'),
-    property_type: headers.indexOf('property_type'),
-    period_end: headers.indexOf('period_end'),
-    median_dom: headers.indexOf('median_dom'),
-    median_ppsf: headers.indexOf('median_ppsf'),
-    sold_above_list: headers.indexOf('sold_above_list')
-  };
-  
-  console.log('Column indices:', colIndex);
-  
+  let headers = null;
+  let colIndex = {};
   const zipData = new Map();
   let processed = 0;
   
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
+  for await (const line of rl) {
+    if (!headers) {
+      headers = line.split('\t');
+      colIndex = {
+        region: headers.indexOf('region'),
+        region_type: headers.indexOf('region_type'),
+        property_type: headers.indexOf('property_type'),
+        period_end: headers.indexOf('period_end'),
+        median_dom: headers.indexOf('median_dom'),
+        median_ppsf: headers.indexOf('median_ppsf'),
+        sold_above_list: headers.indexOf('sold_above_list')
+      };
+      console.log('Column indices:', colIndex);
+      continue;
+    }
+    
     if (!line.trim()) continue;
     
     const cols = line.split('\t');
@@ -93,7 +97,7 @@ function parseTSV(text) {
     }
     
     if (processed % 1000000 === 0) {
-      console.log(`Processed ${processed.toLocaleString()} rows...`);
+      console.log(`Processed ${processed.toLocaleString()} rows, ${zipData.size} zips kept...`);
     }
   }
   
@@ -123,13 +127,14 @@ function convertToOutput(zipData) {
 
 async function main() {
   try {
-    const compressed = await downloadFile(REDFIN_URL);
-    const decompressed = decompress(compressed);
-    console.log(`Decompressed size: ${Math.round(decompressed.length / 1024 / 1024)}MB`);
+    await downloadAndDecompress(REDFIN_URL);
     
-    const text = decompressed.toString('utf-8');
-    const zipData = parseTSV(text);
+    const zipData = await parseTSV();
     const output = convertToOutput(zipData);
+    
+    // Clean up temp file
+    fs.unlinkSync(TEMP_FILE);
+    console.log('Temp file cleaned up');
     
     if (!fs.existsSync('output')) {
       fs.mkdirSync('output');
