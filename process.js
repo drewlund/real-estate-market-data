@@ -52,10 +52,23 @@ async function parseTSV() {
   let colIndex = {};
   const zipData = new Map();
   let processed = 0;
+  let lineNum = 0;
   
   for await (const line of rl) {
+    lineNum++;
+    
     if (!headers) {
       headers = line.split('\t');
+      
+      console.log('=== HEADER DEBUG ===');
+      console.log('Number of columns:', headers.length);
+      console.log('First 10 headers:', headers.slice(0, 10));
+      console.log('Looking for region-like columns:', headers.filter(h => h.toLowerCase().includes('region')));
+      console.log('Looking for property-like columns:', headers.filter(h => h.toLowerCase().includes('property')));
+      console.log('Looking for median-like columns:', headers.filter(h => h.toLowerCase().includes('median')));
+      console.log('All headers:', headers);
+      console.log('=== END DEBUG ===');
+      
       colIndex = {
         region: headers.indexOf('region'),
         region_type: headers.indexOf('region_type'),
@@ -67,6 +80,14 @@ async function parseTSV() {
       };
       console.log('Column indices:', colIndex);
       continue;
+    }
+    
+    if (lineNum === 2) {
+      const cols = line.split('\t');
+      console.log('=== FIRST DATA ROW ===');
+      console.log('Number of columns:', cols.length);
+      console.log('First 10 values:', cols.slice(0, 10));
+      console.log('=== END DATA ROW ===');
     }
     
     if (!line.trim()) continue;
@@ -132,7 +153,6 @@ async function main() {
     const zipData = await parseTSV();
     const output = convertToOutput(zipData);
     
-    // Clean up temp file
     fs.unlinkSync(TEMP_FILE);
     console.log('Temp file cleaned up');
     
